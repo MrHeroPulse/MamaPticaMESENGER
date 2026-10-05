@@ -172,7 +172,10 @@ body{height:100dvh;background:var(--bg);color:var(--text);overscroll-behavior:no
 .settings-row{display:flex;align-items:center;justify-content:space-between;padding:12px 4px;border-bottom:1px solid var(--secondary);font-size:15px}
 .settings-row:last-of-type{border-bottom:none}
 .settings-row .s-info{flex:1}
-.settings-row .s-info small{display:block;color:var(--dim);font-size:12px;margin-top:2px}
+.settings-row .s-info small{display:block;color:var(--dim);font-size:12px;margin-top:2px;word-break:break-all}
+.settings-row .s-btn{padding:8px 14px;border-radius:8px;border:none;background:var(--secondary);color:var(--text);font-size:13px;cursor:pointer;flex-shrink:0;margin-left:10px}
+.settings-row .s-btn:active{background:var(--accent)}
+.settings-row .s-btn.danger{color:var(--danger)}
 .switch-toggle{position:relative;width:46px;height:26px;flex-shrink:0}
 .switch-toggle input{opacity:0;width:0;height:0}
 .switch-toggle label{position:absolute;inset:0;background:var(--secondary);border-radius:13px;cursor:pointer;transition:.2s}
@@ -343,13 +346,38 @@ body{height:100dvh;background:var(--bg);color:var(--text);overscroll-behavior:no
       <label style="font-size:12px;color:var(--dim);">До</label><input type="time" id="setDndTo" value="08:00">
     </div>
     <div class="settings-row"><div class="s-info"><b>🌙 Тема</b></div>
-      <div style="display:flex; gap:6px;">
+      <div style="display:flex;gap:6px;">
         <button class="btn-cancel" id="themeDark" style="padding:6px 12px;border-radius:6px;border:none;cursor:pointer;font-size:13px;">🌙</button>
         <button class="btn-cancel" id="themeLight" style="padding:6px 12px;border-radius:6px;border:none;cursor:pointer;font-size:13px;">☀️</button>
         <button class="btn-cancel" id="themeAuto" style="padding:6px 12px;border-radius:6px;border:none;cursor:pointer;font-size:13px;">🔄</button>
       </div>
     </div>
+    <div class="settings-row">
+      <div class="s-info"><b>🔑 Пароль</b><small>Сменить пароль аккаунта</small></div>
+      <button class="s-btn" id="openChangePass" type="button">Сменить</button>
+    </div>
+    <div class="settings-row">
+      <div class="s-info"><b>🌐 Ключ сети</b><small id="netKeyDisplay">—</small></div>
+      <button class="s-btn" id="copyNetLink" type="button">📋 Ссылка</button>
+    </div>
     <div class="modal-actions"><button class="btn-primary" id="closeSettings" type="button">Готово</button></div>
+  </div>
+</div>
+
+<div class="modal" id="changePassModal">
+  <div class="modal-box">
+    <h3>🔑 Смена пароля</h3>
+    <label>Текущий пароль</label>
+    <input type="password" id="cpOld" placeholder="Введи текущий пароль" autocomplete="current-password">
+    <label style="margin-top:8px;">Новый пароль</label>
+    <input type="password" id="cpNew" placeholder="Минимум 4 символа" autocomplete="new-password">
+    <label style="margin-top:8px;">Повтори новый</label>
+    <input type="password" id="cpNew2" placeholder="Ещё раз" autocomplete="new-password">
+    <div class="hint" id="cpHint" style="min-height:16px;"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="cpCancel" type="button">Отмена</button>
+      <button class="btn-primary" id="cpSave" type="button">Сохранить</button>
+    </div>
   </div>
 </div>
 
@@ -408,9 +436,58 @@ body{height:100dvh;background:var(--bg);color:var(--text);overscroll-behavior:no
 
 <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
-/* ============ CONFIG ============ */
-const APP_ID = 'mamaptica_messenger_v1';
+/* ============ NET KEY ============ */
+const NET_KEY_DEFAULT = 'k7x2p9w4n8q3m5v1';
+function resolveNetKey(){
+  try{
+    const params = new URLSearchParams(location.search);
+    const uk = params.get('key');
+    if(uk && /^[A-Za-z0-9_-]{6,40}$/.test(uk)){
+      try{ localStorage.setItem('msngr_netkey', uk); }catch{}
+      try{ history.replaceState(null, '', location.pathname); }catch{}
+      return uk;
+    }
+    const saved = localStorage.getItem('msngr_netkey');
+    if(saved && /^[A-Za-z0-9_-]{6,40}$/.test(saved)) return saved;
+  }catch{}
+  return NET_KEY_DEFAULT;
+}
+const NET_KEY = resolveNetKey();
+const APP_ID = 'mamaptica_' + NET_KEY;
 const APP_NAME = 'MamaPticaMESENGER';
+
+/* ============ ПАРОЛЬ: ХЕШИРОВАНИЕ ============ */
+async function hashPassword(pass){
+  const salt = 'mamaptica_salt_v1_' + NET_KEY;
+  const data = new TextEncoder().encode(salt + '|' + pass);
+  try{
+    if(typeof crypto !== 'undefined' && crypto.subtle && crypto.subtle.digest){
+      const buf = await crypto.subtle.digest('SHA-256', data);
+      const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+      return 'sha256_' + hex;
+    }
+  }catch(e){}
+  const s = salt + '|' + pass;
+  let h1 = 0x811c9dc5 >>> 0, h2 = 5381 >>> 0;
+  for(let i = 0; i < s.length; i++){
+    const c = s.charCodeAt(i);
+    h1 = ((h1 ^ c) * 16777619) >>> 0;
+    h2 = ((h2 * 33) ^ c) >>> 0;
+  }
+  return 'fb_' + h1.toString(16) + '_' + h2.toString(16);
+}
+async function verifyPassword(user, pass){
+  if(!user) return false;
+  if(user.passwordHash){
+    const h = await hashPassword(pass);
+    return h === user.passwordHash;
+  }
+  // Legacy plaintext
+  if(user.password) return user.password === pass;
+  return false;
+}
+
+/* ============ MQTT ============ */
 const BROKERS = [
   'wss://broker.hivemq.com:8884/mqtt',
   'wss://broker.emqx.io:8084/mqtt',
@@ -451,7 +528,7 @@ let recordingStart = 0;
 let recordingInterval = null;
 let mqttConnected = false;
 const settings = { sound:true, notif:false, typing:true, dnd:false, dndFrom:'23:00', dndTo:'08:00', theme:'auto' };
-const store = { version:5, users:{}, chats:{}, messages:{}, presence:{} };
+const store = { version:6, users:{}, chats:{}, messages:{}, presence:{} };
 
 /* ============ UTILS ============ */
 function lsKey(s){ return 'msngr_' + APP_ID + '_' + s; }
@@ -498,7 +575,11 @@ function formatLastSeen(u){
   if(d.toDateString()===today.toDateString()) return `был(а) в ${hh}:${mm}`;
   return `был(а) ${d.getDate().toString().padStart(2,'0')}.${(d.getMonth()+1).toString().padStart(2,'0')}.${d.getFullYear()}`;
 }
-function publicUser(u){ if(!u) return null; const {password, ...rest}=u; return rest; }
+function publicUser(u){
+  if(!u) return null;
+  const { password, passwordHash, ...rest } = u;
+  return rest;
+}
 function avatarHTML(u, size, showDot){
   size = size || 38;
   const user = getUser(u);
@@ -544,6 +625,42 @@ function mediaPreviewText(m){
   return m.text || '';
 }
 
+/* ============ MIGRATION ============ */
+function migrateOldData(){
+  try{
+    const oldAppId = 'mamaptica_messenger_v1';
+    const oldBase = 'msngr_' + oldAppId + '_';
+    const map = {
+      [oldBase + 'store']: lsKey('store'),
+      [oldBase + 'unread']: UNREAD_KEY,
+      [oldBase + 'settings']: lsKey('settings'),
+      [oldBase + 'current']: lsKey('current'),
+    };
+    let moved = 0;
+    for(const oldKey of Object.keys(map)){
+      const newKey = map[oldKey];
+      const val = localStorage.getItem(oldKey);
+      if(val && !localStorage.getItem(newKey)){
+        try{ localStorage.setItem(newKey, val); moved++; }catch{}
+      }
+    }
+    if(moved > 0) console.log('[MamaPtica] Migrated ' + moved + ' keys');
+  }catch{}
+}
+async function migratePasswords(){
+  let changed = false;
+  for(const u of Object.values(store.users)){
+    if(u.password && !u.passwordHash){
+      try{
+        u.passwordHash = await hashPassword(u.password);
+        delete u.password;
+        changed = true;
+      }catch{}
+    }
+  }
+  if(changed){ saveStore(); console.log('[MamaPtica] Passwords hashed'); }
+}
+
 /* ============ STORAGE ============ */
 function saveStore(){
   try{
@@ -579,7 +696,7 @@ function loadStore(){
     const raw = localStorage.getItem(lsKey('store'));
     if(!raw) return;
     const p = JSON.parse(raw);
-    if(p.version !== 5) return;
+    if(p.version !== 5 && p.version !== 6) return;
     store.users = p.users || {};
     store.chats = p.chats || {};
     store.messages = p.messages || {};
@@ -680,9 +797,7 @@ function showBrowserNotif(title, body, chatId, authorUid){
 }
 
 /* ============ MQTT ============ */
-function connectMQTT(){
-  tryConnect(0);
-}
+function connectMQTT(){ tryConnect(0); }
 function tryConnect(idx){
   if(idx >= BROKERS.length){
     setConnBadge('offline', '⚠ Офлайн-режим (нет сервера)');
@@ -693,17 +808,14 @@ function tryConnect(idx){
   const clientId = 'msngr_' + Math.random().toString(16).slice(2,12);
   let finished = false;
   let c;
-  try{
-    c = mqtt.connect(url, { clientId, clean:true, reconnectPeriod:0, connectTimeout:5000, keepalive:30, protocolVersion:4 });
-  }catch(e){ tryConnect(idx+1); return; }
-
+  try{ c = mqtt.connect(url, { clientId, clean:true, reconnectPeriod:0, connectTimeout:5000, keepalive:30, protocolVersion:4 }); }
+  catch(e){ tryConnect(idx+1); return; }
   const timer = setTimeout(() => {
     if(finished) return;
     finished = true;
     try{ c.end(true); }catch{}
     tryConnect(idx+1);
   }, 6000);
-
   c.on('connect', () => {
     if(finished) return;
     finished = true;
@@ -717,18 +829,13 @@ function tryConnect(idx){
       connected = false; mqttConnected = false;
       setConnBadge('offline', '⚠ Офлайн-режим');
       setTimeout(() => {
-        if(!connected){
-          subscribedChats.clear();
-          tryConnect(idx);
-        }
+        if(!connected){ subscribedChats.clear(); tryConnect(idx); }
       }, 5000);
     });
     c.on('error', e => console.warn('MQTT err', e));
-
     c.subscribe(`msgr/${APP_ID}/users/+`);
     c.subscribe(`msgr/${APP_ID}/chats/+`);
     c.subscribe(`msgr/${APP_ID}/presence/+`);
-
     if(currentUid){
       resubscribeChats();
       republishMyData();
@@ -817,9 +924,7 @@ function publishAllSnapshots(){
 }
 function publishPresence(){
   if(!currentUid || !connected || !client) return;
-  try{
-    client.publish(`msgr/${APP_ID}/presence/${currentUid}`, JSON.stringify({uid:currentUid,online:true,lastSeen:Date.now()}), { retain:true });
-  }catch{}
+  try{ client.publish(`msgr/${APP_ID}/presence/${currentUid}`, JSON.stringify({uid:currentUid,online:true,lastSeen:Date.now()}), { retain:true }); }catch{}
 }
 function startHeartbeat(){
   clearInterval(heartbeatTimer);
@@ -836,7 +941,8 @@ function handleMessage(topic, payload){
     const prev = store.users[u];
     if(!prev || (data.updated||0) >= (prev.updated||0)){
       const merged = { ...data };
-      if(prev && prev.password && !data.password) merged.password = prev.password;
+      if(prev && prev.passwordHash && !data.passwordHash) merged.passwordHash = prev.passwordHash;
+      if(prev && prev.password && !merged.passwordHash && !merged.password) merged.password = prev.password;
       store.users[u] = merged;
       saveStore();
       try{ renderChatList(); renderMessages(); if(activeChatId) renderHeader(); if(searchQuery) renderSearchResults(document.getElementById('chatList')); }catch{}
@@ -991,18 +1097,18 @@ regUsernameEl.addEventListener('input', () => {
   regUsernameHint.textContent = '✓ @'+v+' свободен'; regUsernameHint.className='hint ok';
 });
 
-authBtnEl.addEventListener('click', () => {
+authBtnEl.addEventListener('click', async () => {
   authErrEl.textContent = '';
   try{
-    if(isRegister) doRegister();
-    else doLoginAction();
+    if(isRegister) await doRegister();
+    else await doLoginAction();
   }catch(e){
     console.error(e);
     authErrEl.textContent = 'Ошибка: ' + e.message;
   }
 });
 
-function doRegister(){
+async function doRegister(){
   const nick = document.getElementById('regNick').value.trim();
   const uname = regUsernameEl.value.trim();
   const pass = document.getElementById('regPass').value;
@@ -1010,11 +1116,12 @@ function doRegister(){
   if(nick.length < 2 || nick.length > 30){ authErrEl.textContent = 'Ник: 2-30 символов'; return; }
   if(!isValidUsername(uname)){ authErrEl.textContent = 'Неверный @username'; return; }
   if(isUsernameTaken(uname)){ authErrEl.textContent = '@'+uname+' уже занят'; return; }
-  if(pass.length < 3){ authErrEl.textContent = 'Пароль минимум 3 символа'; return; }
+  if(pass.length < 4){ authErrEl.textContent = 'Пароль минимум 4 символа'; return; }
 
   const myUid = uid('u');
+  const passwordHash = await hashPassword(pass);
   const userData = {
-    uid:myUid, nick, username:uname, password:pass,
+    uid:myUid, nick, username:uname, passwordHash,
     bio:'', avatar:null, banner:null,
     color:AVATAR_COLORS[Math.floor(Math.random()*AVATAR_COLORS.length)],
     created:Date.now(), updated:Date.now()
@@ -1030,14 +1137,24 @@ function doRegister(){
   doLogin(myUid);
 }
 
-function doLoginAction(){
+async function doLoginAction(){
   const idRaw = document.getElementById('loginIdentifier').value.trim().replace(/^@/, '');
   const pass = document.getElementById('loginPass').value;
   if(!idRaw || !pass){ authErrEl.textContent = 'Заполните все поля'; return; }
   const id = idRaw.toLowerCase();
   const existing = Object.values(store.users).find(u => u.username && u.username.toLowerCase() === id);
   if(!existing){ authErrEl.textContent = 'Пользователь не найден локально. Зарегистрируйся.'; return; }
-  if(existing.password !== pass){ authErrEl.textContent = 'Неверный пароль'; return; }
+  const ok = await verifyPassword(existing, pass);
+  if(!ok){ authErrEl.textContent = 'Неверный пароль'; return; }
+  // Если был plaintext — мигрируем на хеш
+  if(existing.password && !existing.passwordHash){
+    existing.passwordHash = await hashPassword(pass);
+    delete existing.password;
+    saveStore();
+    if(mqttConnected && client){
+      try{ client.publish(`msgr/${APP_ID}/users/${existing.uid}`, JSON.stringify(publicUser(existing)), { retain:true }); }catch{}
+    }
+  }
   doLogin(existing.uid);
 }
 
@@ -1093,6 +1210,8 @@ function updateSettingsUI(){
   dndRange.style.display = settings.dnd ? 'block' : 'none';
   const st = document.getElementById('soundToggle');
   if(st){ st.textContent = settings.sound ? '🔔' : '🔕'; st.classList.toggle('muted', !settings.sound); }
+  const nk = document.getElementById('netKeyDisplay');
+  if(nk) nk.textContent = NET_KEY;
 }
 document.getElementById('settingsBtn').addEventListener('click', () => { updateSettingsUI(); settingsModal.classList.add('show'); });
 document.getElementById('closeSettings').addEventListener('click', () => settingsModal.classList.remove('show'));
@@ -1119,6 +1238,71 @@ document.getElementById('soundToggle').addEventListener('click', e => {
 document.getElementById('themeDark').addEventListener('click', () => { settings.theme='dark'; saveSettings(); applyTheme(); });
 document.getElementById('themeLight').addEventListener('click', () => { settings.theme='light'; saveSettings(); applyTheme(); });
 document.getElementById('themeAuto').addEventListener('click', () => { settings.theme='auto'; saveSettings(); applyTheme(); });
+
+document.getElementById('copyNetLink').addEventListener('click', () => {
+  const url = location.origin + location.pathname + '?key=' + encodeURIComponent(NET_KEY);
+  try{
+    navigator.clipboard.writeText(url).then(() => showToast('📋 Ссылка скопирована', true)).catch(() => {
+      prompt('Скопируй ссылку:', url);
+    });
+  }catch{ prompt('Скопируй ссылку:', url); }
+});
+
+/* ============ CHANGE PASSWORD ============ */
+const changePassModal = document.getElementById('changePassModal');
+const cpOld = document.getElementById('cpOld');
+const cpNew = document.getElementById('cpNew');
+const cpNew2 = document.getElementById('cpNew2');
+const cpHint = document.getElementById('cpHint');
+
+document.getElementById('openChangePass').addEventListener('click', () => {
+  cpOld.value = ''; cpNew.value = ''; cpNew2.value = '';
+  cpHint.textContent = ''; cpHint.className = 'hint';
+  settingsModal.classList.remove('show');
+  changePassModal.classList.add('show');
+  setTimeout(() => cpOld.focus(), 100);
+});
+document.getElementById('cpCancel').addEventListener('click', () => {
+  changePassModal.classList.remove('show');
+  settingsModal.classList.add('show');
+});
+
+document.getElementById('cpSave').addEventListener('click', async () => {
+  cpHint.className = 'hint err';
+  const me = store.users[currentUid];
+  if(!me){ cpHint.textContent = 'Пользователь не найден'; return; }
+
+  const oldP = cpOld.value;
+  const newP = cpNew.value;
+  const newP2 = cpNew2.value;
+
+  if(!oldP){ cpHint.textContent = 'Введи текущий пароль'; return; }
+  if(!newP){ cpHint.textContent = 'Введи новый пароль'; return; }
+  if(newP.length < 4){ cpHint.textContent = 'Новый пароль: минимум 4 символа'; return; }
+  if(newP === oldP){ cpHint.textContent = 'Новый пароль совпадает со старым'; return; }
+  if(newP !== newP2){ cpHint.textContent = 'Пароли не совпадают'; return; }
+
+  const ok = await verifyPassword(me, oldP);
+  if(!ok){ cpHint.textContent = 'Неверный текущий пароль'; return; }
+
+  try{
+    me.passwordHash = await hashPassword(newP);
+    delete me.password;
+    me.updated = Date.now();
+    store.users[currentUid] = me;
+    saveStore();
+
+    if(connected && client){
+      try{ client.publish(`msgr/${APP_ID}/users/${currentUid}`, JSON.stringify(publicUser(me)), { retain:true }); }catch{}
+    }
+    cpHint.textContent = ''; cpHint.className = 'hint';
+    changePassModal.classList.remove('show');
+    showToast('🔑 Пароль изменён ✓', true);
+  }catch(e){
+    console.error(e);
+    cpHint.textContent = 'Ошибка: ' + e.message;
+  }
+});
 
 /* ============ PROFILE ============ */
 const editProfileModal = document.getElementById('editProfileModal');
@@ -1946,36 +2130,3 @@ document.getElementById('msgInput').addEventListener('input', onInputTyping);
 /* ============ IMAGE VIEWER ============ */
 document.getElementById('closeViewer').addEventListener('click', () => {
   document.getElementById('imageViewer').classList.remove('show');
-});
-
-/* ============ HEADER REFRESH ============ */
-setInterval(() => {
-  if(activeChatId) try{ renderHeader(); }catch{}
-}, 2000);
-
-/* ============ MOBILE BACK ============ */
-window.addEventListener('resize', () => {
-  if(!isMobile()) document.getElementById('app').classList.remove('chat-open');
-});
-
-/* ============ INIT ============ */
-(async () => {
-  loadStore();
-  loadUnread();
-  loadSettings();
-  try{ updateSettingsUI(); }catch{}
-
-  const saved = localStorage.getItem(lsKey('current'));
-  if(saved && store.users[saved]) doLogin(saved);
-
-  // Автоподключение к MQTT в фоне
-  connectMQTT();
-
-  // Если автовход не сработал — показываем форму
-  if(!currentUid){
-    document.getElementById('auth').style.display = 'flex';
-  }
-})();
-</script>
-</body>
-</html>
